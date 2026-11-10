@@ -1,4 +1,14 @@
 @import "tailwindcss";
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #0d3b66; /* mesma cor do app, evita faixa branca em overscroll */
+}
 :root {
   --text: #6b6375;
   --text-h: #08060d;

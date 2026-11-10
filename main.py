@@ -164,8 +164,15 @@ async def health() -> dict:
 
 @app.get("/serial/ports")
 async def serial_ports() -> list[dict]:
-    """Lista as portas detectadas (útil para descobrir o valor de SERIAL_PORT)."""
-    return [{"device": p.device, "description": p.description} for p in list_ports.comports()]
+    return [
+        {
+            "device": p.device,
+            "description": p.description,
+            "vid": f"{p.vid:#06x}" if p.vid else None,
+            "pid": f"{p.pid:#06x}" if p.pid else None,
+        }
+        for p in list_ports.comports()
+    ]
 
 
 @app.post("/simulate/let")

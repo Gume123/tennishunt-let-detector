@@ -1,2 +1,8 @@
 iniciar backend
+$env:SERIAL_PORT="COM5"
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+iniciar front 
+npm run dev
+
+se atentar para ativar o arduino, mas não abrir o serial monitor

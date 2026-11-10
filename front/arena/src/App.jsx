@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import './index.css'
-const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8000/ws/frontend";
+const WS_URL =
+  import.meta.env.VITE_WS_URL ??
+  `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:8000/ws/frontend`;
 const SOUND_URL = "/let.mp3"; // coloque o arquivo em /public/let_sound.mp3
 const LOCK_MS = 2000; // duração do alerta e do bloqueio dos botões
 

@@ -1,53 +1,51 @@
 /*
-  Smart Tennis Arena - Sensor de LET via USB (Arduino UNO R4 WiFi + 3 piezos)
+  Smart Tennis Arena - Sensor de LET via USB (Arduino UNO R4 WiFi + 2 piezos)
 
-  Adaptado do seu código original: mantém os 3 piezos (A0, A1, A2), a leitura de 10 bits
-  e os 5 LEDs (pinos 2 a 6). Removido o Wi-Fi: os dados vão pela USB.
-
+  Piezos em A1 e A2, LED único no pino 3.
   A cada "let" é enviada uma linha JSON pela serial:
-    {"event":"let","timestamp":123456,"sensor":2,"intensity":85,"peaks":[10,85,30]}
+    {"event":"let","timestamp":123456,"sensor":2,"intensity":150,"peaks":[150,40]}
 
   O servidor só trata como evento as linhas que começam com "{". O log periódico
-  e as mensagens de início são ignorados, então pode manter.
+  e as mensagens de início (começam com "#") são ignorados.
   Feche o Serial Monitor da Arduino IDE antes de rodar o servidor.
 */
 
 // ===== PIEZOS =====
-const uint8_t NUM_SENSORS = 3;
-const int PIEZO_PINS[NUM_SENSORS] = {A0, A1, A2};
+const uint8_t NUM_SENSORS = 2;
+const int     PIEZO_PINS[NUM_SENSORS] = {A1, A2};
+// ID enviado ao servidor para cada piezo (mantém a numeração antiga: A1 = 2, A2 = 3)
+const uint8_t SENSOR_ID[NUM_SENSORS]  = {2, 3};
 
-// ===== LEDS (feedback visual, igual ao seu código) =====
-// Piezo 1: LEDs 6 e 5 | Piezo 2: LEDs 4 e 3 | Piezo 3: LED 2
-const int LED_NIVEL1[NUM_SENSORS] = {6, 4, 2};   // acende com > LIMIAR_LED_1
-const int LED_NIVEL2[NUM_SENSORS] = {5, 3, -1};  // acende com > LIMIAR_LED_2 (-1 = não existe)
-const int LIMIAR_LED_1 = 20;
-const int LIMIAR_LED_2 = 40;
+// ===== LED =====
+const int      LED_PIN     = 3;
+const uint32_t LED_HOLD_MS = 200;   // tempo que o LED fica aceso após um let
 
 // ===== DETECÇÃO DE LET =====
-const int      THRESHOLD      = 20;   // 0..1023; ajuste com DEBUG_MODE
+const int      THRESHOLD      = 90;   // 0..1023; só dispara acima disso (ruído ~75, batidas ~110+)
+const int      REARM_LEVEL    = 60;   // só rearma quando todos os sensores caírem abaixo disso
 const uint16_t PEAK_WINDOW_MS = 8;    // janela para captar o pico real
-const uint32_t COOLDOWN_MS    = 500;  // debounce entre dois "let"
+const uint32_t COOLDOWN_MS    = 500;  // tempo mínimo entre dois "let"
 
 // ===== LOG =====
-const bool DEBUG_MODE = false;            // true = imprime leituras rápidas para calibrar
-const bool LOG_PERIODICO = true;          // log a cada 5 s (ignorado pelo servidor)
+const bool DEBUG_MODE    = false;     // true = imprime leituras rápidas para calibrar
+const bool LOG_PERIODICO = true;      // log a cada 5 s (ignorado pelo servidor)
 const unsigned long INTERVALO_LOG = 5000;
 
 unsigned long ultimoLog = 0;
 unsigned long lastLetAt = 0;
-
-void atualizarLeds(const int* v) {
-  for (uint8_t i = 0; i < NUM_SENSORS; i++) {
-    digitalWrite(LED_NIVEL1[i], v[i] > LIMIAR_LED_1 ? HIGH : LOW);
-    if (LED_NIVEL2[i] >= 0) digitalWrite(LED_NIVEL2[i], v[i] > LIMIAR_LED_2 ? HIGH : LOW);
-  }
-}
+unsigned long ledStart  = 0;
+bool ledOn = false;
+bool armed = true;
 
 void sendLet(uint8_t sensorIndex, int intensity, const int* peaks) {
   char json[128];
-  snprintf(json, sizeof(json),
-           "{\"event\":\"let\",\"timestamp\":%lu,\"sensor\":%u,\"intensity\":%d,\"peaks\":[%d,%d,%d]}",
-           millis(), (unsigned)(sensorIndex + 1), intensity, peaks[0], peaks[1], peaks[2]);
+  int n = snprintf(json, sizeof(json),
+                   "{\"event\":\"let\",\"timestamp\":%lu,\"sensor\":%u,\"intensity\":%d,\"peaks\":[",
+                   millis(), (unsigned)SENSOR_ID[sensorIndex], intensity);
+  for (uint8_t i = 0; i < NUM_SENSORS; i++) {
+    n += snprintf(json + n, sizeof(json) - n, i ? ",%d" : "%d", peaks[i]);
+  }
+  snprintf(json + n, sizeof(json) - n, "]}");
   Serial.println(json);
 }
 
@@ -58,41 +56,52 @@ void setup() {
   analogReadResolution(10);  // o UNO R4 já usa 10 bits por padrão; a linha só deixa isso explícito
 #endif
 
-  for (int pino = 2; pino <= 6; pino++) pinMode(pino, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
-  Serial.println("# Smart Tennis Arena pronto (UNO R4 WiFi)");
+  Serial.println("# Smart Tennis Arena pronto (UNO R4 WiFi, A1/A2)");
 }
 
 void loop() {
   int values[NUM_SENSORS];
   bool triggered = false;
+  bool quiet = true;
+
   for (uint8_t i = 0; i < NUM_SENSORS; i++) {
     values[i] = analogRead(PIEZO_PINS[i]);
-    if (values[i] > THRESHOLD) triggered = true;
+    if (values[i] > THRESHOLD)   triggered = true;
+    if (values[i] > REARM_LEVEL) quiet = false;
   }
 
-  atualizarLeds(values);
+  // Apaga o LED depois do tempo de hold
+  if (ledOn && millis() - ledStart >= LED_HOLD_MS) {
+    ledOn = false;
+    digitalWrite(LED_PIN, LOW);
+  }
 
   if (DEBUG_MODE) {
     Serial.print(values[0]); Serial.print('\t');
-    Serial.print(values[1]); Serial.print('\t');
-    Serial.println(values[2]);
+    Serial.println(values[1]);
     delay(20);
     return;
   }
 
   if (LOG_PERIODICO && millis() - ultimoLog >= INTERVALO_LOG) {
     ultimoLog = millis();
-    Serial.print("# piezos A0/A1/A2: ");
+    Serial.print("# piezos A1/A2: ");
     Serial.print(values[0]); Serial.print(" / ");
-    Serial.print(values[1]); Serial.print(" / ");
-    Serial.println(values[2]);
+    Serial.println(values[1]);
   }
 
-  if (!triggered || (millis() - lastLetAt) < COOLDOWN_MS) return;
+  // Rearma só quando o sinal voltou ao repouso e o cooldown passou
+  if (!armed && quiet && millis() - lastLetAt >= COOLDOWN_MS) armed = true;
+
+  if (!triggered || !armed) return;
 
   // Registra o pico de cada sensor para saber qual recebeu a batida mais forte
-  int peaks[NUM_SENSORS] = {values[0], values[1], values[2]};
+  int peaks[NUM_SENSORS];
+  for (uint8_t i = 0; i < NUM_SENSORS; i++) peaks[i] = values[i];
+
   unsigned long start = millis();
   while (millis() - start < PEAK_WINDOW_MS) {
     for (uint8_t i = 0; i < NUM_SENSORS; i++) {
@@ -100,7 +109,6 @@ void loop() {
       if (v > peaks[i]) peaks[i] = v;
     }
   }
-  atualizarLeds(peaks);  // mostra o pico nos LEDs
 
   uint8_t strongest = 0;
   for (uint8_t i = 1; i < NUM_SENSORS; i++) {
@@ -108,5 +116,11 @@ void loop() {
   }
 
   lastLetAt = millis();
+  armed = false;
+
+  digitalWrite(LED_PIN, HIGH);
+  ledOn = true;
+  ledStart = millis();
+
   sendLet(strongest, peaks[strongest], peaks);
 }
